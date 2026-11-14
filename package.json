@@ -1,0 +1,9 @@
+{
+  "name": "dice-beef",
+  "version": "1.0.0",
+  "description": "iPad gyroscope pan-flip dice beef game (web prototype)",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}
