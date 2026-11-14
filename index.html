@@ -84,7 +84,7 @@
   </div>
 
   <button class="cornerBtn" id="helpBtn" aria-label="說明">?</button>
-  <button class="cornerBtn" id="debugBtn" aria-label="數據">數</button>
+  <button class="cornerBtn" id="debugBtn" aria-label="數據" hidden>數</button>
   <pre id="debug" hidden></pre>
   <div id="toast" hidden></div>
 
@@ -132,6 +132,7 @@
   <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader } from './vendor/loaders/GLTFLoader.js';
+    import { RoundedBoxGeometry } from './vendor/geometries/RoundedBoxGeometry.js';
 
     // =================== 參數 ===================
     const Q = new URLSearchParams(location.search);
@@ -147,17 +148,18 @@
       maxTilt: THREE.MathUtils.degToRad(34),
       tiltGain: 1.0,            // 裝置角度 -> 鑊角度 倍率
       flickThresh: Number(Q.get('flick')) || 8,   // 拋鑊加速度閾值 m/s^2
-      cookTime: 14,             // 一面由生煎到燶所需秒數（金黃喺中後段）
-      goldenLo: 0.45, goldenHi: 0.9, // 金黃區間：6.3s - 12.6s，過咗先算燶
+      cookTime: 16,             // 一面由生煎到燶所需秒數（金黃喺前中段）
+      goldenLo: 0.3, goldenHi: 0.97, // 金黃區間：4.8s 起；燶唔再睇累積，睇連續煎
+      burnLimit: 10,              // 同一面連續煎 10 秒先算燶；翻面/拋起即 reset
       roundTime: Number(Q.get('t')) || 120,
       gravity: 9.8,
     };
     const savedThresh = Number(localStorage.getItem('dicebeef.flickThresh'));
     if (savedThresh) CFG.flickThresh = savedThresh;
-
     // =================== 動作輸入 ===================
     const input = {
       tiltX: 0, tiltZ: 0,          // 平滑後嘅鑊傾斜（弧度）
+      flipX: 1, flipY: 1,          // 方向校準（Android 會相反）
       targetTiltX: 0, targetTiltZ: 0,
       lastAccel: new THREE.Vector3(),
       gravity: new THREE.Vector3(0, 0, -9.8), // 平滑後嘅重力向量（裝置座標）
@@ -166,6 +168,16 @@
       motionOn: false,
       beta: 0, gamma: 0,
     };
+    const FLIP_MODES = [['正常', 1, 1], ['左右反', -1, 1], ['前後反', 1, -1], ['全反', -1, -1]];
+    // Android Chrome 感應器軸向同 iOS 相反 → Android 預設「全反」，可喺面板手動校準
+    let flipMode = localStorage.getItem('dicebeef.flipMode') !== null
+      ? Number(localStorage.getItem('dicebeef.flipMode'))
+      : (/Android/i.test(navigator.userAgent) ? 3 : 0);
+    function applyFlip() {
+      const m = FLIP_MODES[flipMode % FLIP_MODES.length];
+      input.flipX = m[1]; input.flipY = m[2];
+    }
+    applyFlip();
     const tmpG = new THREE.Vector3();
     let flickCooldown = 0;
     const FLICK_COOLDOWN = 0.55;
@@ -206,8 +218,9 @@
         if (innerHeight >= innerWidth && (angDeg === 90 || angDeg === 270)) angDeg -= 90;
         const ang = angDeg * Math.PI / 180;
         const cs = Math.cos(ang), sn = Math.sin(ang);
-        const sgx = ux * cs + uy * sn;
-        const sgy = -ux * sn + uy * cs;
+        // Android Chrome 同 iOS 嘅感應器軸向慣例相反：flipX/flipY 喺「數」面板校準
+        const sgx = (ux * cs + uy * sn) * input.flipX;
+        const sgy = (-ux * sn + uy * cs) * input.flipY;
         input.targetTiltX = THREE.MathUtils.clamp(Math.atan2(sgy, uz) * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
         input.targetTiltZ = THREE.MathUtils.clamp(Math.atan2(sgx, uz) * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
         input.motionOn = true;
@@ -220,8 +233,12 @@
           const sig = Math.max(up, mag * 0.7);
           input.peakAccel = Math.max(input.peakAccel * 0.98, sig);
           if (sig > CFG.flickThresh && flickCooldown <= 0 && flickArmed) {
-            const strength = THREE.MathUtils.clamp(sig / 20, 0.55, 1.5);
-            doFlick(strength);
+            const strength = THREE.MathUtils.clamp((sig - 6) / 17, 0.4, 2.0);
+            // 抽嘅水平方向（螢幕座標）：hx>0 向右、hy>0 向前（向螢幕上方）
+            const hx = (a.x * cs + a.y * sn) * input.flipX;
+            const hy = (-a.x * sn + a.y * cs) * input.flipY;
+            const hl = Math.hypot(hx, hy);
+            doFlick(strength, hl > 2 ? { x: hx / hl, y: hy / hl } : null);
             flickCooldown = FLICK_COOLDOWN;
             flickArmed = false;
           } else if (sig < CFG.flickThresh * 0.55) {
@@ -279,9 +296,50 @@
     burnerCore.position.y = -0.077;
     scene.add(burnerCore);
 
-    // 鍋組（跟住傾斜）
+    // 鍋組（跟住傾斜）：鑊中心做軸心，傾斜大嗰陣微微托高防穿爐
     const panGroup = new THREE.Group();
     scene.add(panGroup);
+    // 鑊底層油：畫出嚟嘅油膜貼圖 — 深淺漩紋＋小泡，薄身通透先似真油
+    function makeOilTexture() {
+      const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+      const x = cv.getContext('2d');
+      // 基底：深蜜色帶放射漸變（中心淺、邊緣深）
+      const g = x.createRadialGradient(128, 118, 20, 128, 128, 128);
+      g.addColorStop(0, 'rgba(150,100,28,0.55)');
+      g.addColorStop(0.7, 'rgba(115,72,18,0.6)');
+      g.addColorStop(1, 'rgba(70,42,10,0.65)');
+      x.fillStyle = g; x.fillRect(0, 0, 256, 256);
+      // 漩漩紋：幾條隨機彎弧，深淺交替
+      for (let i = 0; i < 26; i++) {
+        const r0 = 15 + Math.random() * 105, a0 = Math.random() * Math.PI * 2;
+        const arc = 0.5 + Math.random() * 1.6;
+        x.beginPath();
+        x.arc(128 + (Math.random() - 0.5) * 20, 128 + (Math.random() - 0.5) * 20, r0, a0, a0 + arc);
+        x.strokeStyle = Math.random() < 0.5 ? `rgba(190,140,60,${0.05 + Math.random() * 0.1})` : `rgba(50,30,8,${0.06 + Math.random() * 0.12})`;
+        x.lineWidth = 1 + Math.random() * 3;
+        x.stroke();
+      }
+      // 小泡：邊緣多啲
+      for (let i = 0; i < 60; i++) {
+        const ang = Math.random() * Math.PI * 2, rr = 60 + Math.random() * 64;
+        const bx = 128 + Math.cos(ang) * rr, by = 128 + Math.sin(ang) * rr;
+        const br = 0.6 + Math.random() * 1.8;
+        x.beginPath(); x.arc(bx, by, br, 0, Math.PI * 2);
+        x.fillStyle = `rgba(255,230,160,${0.1 + Math.random() * 0.2})`; x.fill();
+      }
+      const tex = new THREE.CanvasTexture(cv);
+      return tex;
+    }
+    const oil = new THREE.Mesh(
+      new THREE.CircleGeometry(CFG.panR * 0.98, 48),
+      new THREE.MeshStandardMaterial({
+        map: makeOilTexture(), transparent: true, opacity: 0.95,
+        roughness: 0.3, metalness: 0.25, depthWrite: false,
+      })
+    );
+    oil.rotation.x = -Math.PI / 2;
+    oil.position.y = CFG.floorY + 0.002;
+    panGroup.add(oil);
     const panMat = new THREE.MeshStandardMaterial({ color: 0x37373d, roughness: 0.5, metalness: 0.6 });
     const panInnerMat = new THREE.MeshStandardMaterial({ color: 0x1d1d22, roughness: 0.65, metalness: 0.35 });
     // 後備鍋（模型 load 唔到就用）
@@ -333,34 +391,51 @@
       const lvl = Math.round(cube.cook[f] * 16);
       if (lvl === cube.texLevel[f]) return;
       cube.texLevel[f] = lvl;
-      const t = cube.cook[f], F = cube.faces[f], ctx = F.ctx;
-      ctx.drawImage(F.base, 0, 0);
+      const t = cube.cook[f], F = cube.faces[f], ctx = cube.atlasCtx;
+      // atlas 係 2 列 x 3 行，每格 128px；面序 +x,-x,+y,-y,+z,-z
+      const ox = (f % 2) * 128, oy = Math.floor(f / 2) * 128;
+      ctx.drawImage(F.base, ox, oy);
       if (t > 0.02) {
         const goldA = Math.min(1, t * 2);
-        ctx.fillStyle = `rgba(255,178,52,${goldA * 0.72})`; ctx.fillRect(0, 0, 128, 128);
+        ctx.fillStyle = `rgba(255,178,52,${goldA * 0.72})`; ctx.fillRect(ox, oy, 128, 128);
         // 煎痕
         ctx.strokeStyle = `rgba(140,74,18,${goldA * 0.45})`; ctx.lineWidth = 3; ctx.lineCap = 'round';
         for (let i = 0; i < 4; i++) {
           const y = 18 + i * 30;
-          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(128, y + 8); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(ox, oy + y); ctx.lineTo(ox + 128, oy + y + 8); ctx.stroke();
         }
-        if (t > 0.75) {
-          const burn = (t - 0.75) / 0.25;
-          ctx.fillStyle = `rgba(44,20,6,${burn * 0.85})`; ctx.fillRect(0, 0, 128, 128);
-          if (t > 0.9) { // 燶邊
-            ctx.strokeStyle = `rgba(12,6,2,${Math.min(1, (t - 0.9) / 0.1)})`;
-            ctx.lineWidth = 16; ctx.strokeRect(8, 8, 112, 112);
+        if (t > 0.9) {
+          const burn = (t - 0.9) / 0.1;
+          ctx.fillStyle = `rgba(44,20,6,${burn * 0.85})`; ctx.fillRect(ox, oy, 128, 128);
+          if (t > 0.96) { // 燶邊
+            ctx.strokeStyle = `rgba(12,6,2,${Math.min(1, (t - 0.96) / 0.04)})`;
+            ctx.lineWidth = 16; ctx.strokeRect(ox + 8, oy + 8, 112, 112);
           }
         }
       }
-      F.tex.needsUpdate = true;
+      cube.atlasTex.needsUpdate = true;
     }
 
     const S = CFG.cubeSize, H = S / 2;
     const restY = CFG.floorY + H; // 牛肉粒貼住鑊內底嘅中心高度
     const cubes = [];      // 喺鑊度嘅（起菜後會移除）
     const allCubes = [];   // 包括起咗菜嘅，restart 用
-    const geo = new THREE.BoxGeometry(S, S, S);
+    const geo = new RoundedBoxGeometry(S, S, S, 4, S * 0.22);
+    // 將圓角方塊 UV 改成六面 2x3 atlas 投影，先至保得住每面獨立煎色
+    {
+      const pos = geo.attributes.position, uv = geo.attributes.uv;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
+        let f, u, v;
+        if (ax >= ay && ax >= az) { f = x > 0 ? 0 : 1; u = (x > 0 ? -z : z) / S + 0.5; v = y / S + 0.5; }
+        else if (ay >= az)      { f = y > 0 ? 2 : 3; u = x / S + 0.5;               v = (y > 0 ? -z : z) / S + 0.5; }
+        else                    { f = z > 0 ? 4 : 5; u = (z > 0 ? x : -x) / S + 0.5; v = y / S + 0.5; }
+        const col = f % 2, row = Math.floor(f / 2);
+        uv.setXY(i, (col + u) / 2, 1 - (row + (1 - v)) / 3);
+      }
+      uv.needsUpdate = true;
+    }
     const FACE_NORMALS = [
       new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
       new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0),
@@ -368,20 +443,38 @@
     ];
     function spawnCube(i, fresh) {
       const faces = [];
-      const mats = [];
+      const atlas = document.createElement('canvas');
+      atlas.width = 256; atlas.height = 384;
+      const atlasCtx = atlas.getContext('2d');
       for (let f = 0; f < FACE_COUNT; f++) {
         const base = faceBase();
-        const cv = document.createElement('canvas');
-        cv.width = cv.height = 128;
-        const ctx = cv.getContext('2d');
-        ctx.drawImage(base, 0, 0);
-        const tex = new THREE.CanvasTexture(cv);
-        tex.colorSpace = THREE.SRGBColorSpace;
-        faces.push({ base, ctx, tex });
-        mats.push(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.55, metalness: 0.02 }));
+        atlasCtx.drawImage(base, (f % 2) * 128, Math.floor(f / 2) * 128);
+        faces.push({ base });
       }
-      const mesh = new THREE.Mesh(geo, mats);
+      const atlasTex = new THREE.CanvasTexture(atlas);
+      atlasTex.colorSpace = THREE.SRGBColorSpace;
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: atlasTex, roughness: 0.55, metalness: 0.02 }));
       mesh.castShadow = true;
+      // 六面金黃完成特效：金色光環＋環繞星粒
+      const readyFx = new THREE.Group();
+      readyFx.visible = false;
+      const readyRing = new THREE.Mesh(
+        new THREE.TorusGeometry(S * 0.7, 0.008, 8, 28),
+        new THREE.MeshBasicMaterial({ color: 0xffd85a, transparent: true, opacity: 0.8, depthWrite: false })
+      );
+      readyRing.rotation.x = Math.PI / 2;
+      readyRing.position.y = -H + 0.008;
+      readyFx.add(readyRing);
+      const readyStars = [];
+      for (let n = 0; n < 7; n++) {
+        const star = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.012, 0),
+          new THREE.MeshBasicMaterial({ color: n % 2 ? 0xfff2a0 : 0xffbd28, transparent: true, depthWrite: false })
+        );
+        readyFx.add(star);
+        readyStars.push(star);
+      }
+      panGroup.add(readyFx);
       const a = (i / CFG.cubes) * Math.PI * 2 + 0.4;
       const r = CFG.panR * 0.45;
       const cube = {
@@ -392,7 +485,8 @@
         angVel: new THREE.Vector3(),
         cook: [0, 0, 0, 0, 0, 0],
         texLevel: [-1, -1, -1, -1, -1, -1],
-        faces,
+        faces, atlasCtx, atlasTex,
+        readyFx, readyRing, readyStars, readyTime: Math.random() * 6,
         state: 'rest',
         outTimer: 0,
       };
@@ -413,21 +507,32 @@
       return tmpV.copy(gWorld).applyQuaternion(tmpQ);
     }
 
-    function doFlick(strength) {
+    // dir：抽嘅方向（螢幕座標 x=右 y=向前），冇資料就隨機翻滾軸
+    function doFlick(strength, dir) {
       sizzle && sizzle.burst();
+      // 翻滾軸 = 世界向上 × 抽嘅方向：向前抽 → 繞 -x 軸向前翻；斜抽 → 斜軸
+      const baseA = dir ? Math.atan2(-dir.x, -dir.y) : Math.random() * Math.PI * 2;
       for (const c of cubes) {
         if (c.state === 'out' || c.state === 'serve') continue;
-        const up = 3.6 * strength + Math.random() * 1.0;
+        // 力度直接控制高度：輕力低拋，高力先高拋
+        const force = THREE.MathUtils.clamp((strength - 0.4) / 1.6, 0, 1);
+        const up = 2.2 + force * 3.0 + Math.random() * (0.12 + force * 0.28);
         c.vel.y += up;
-        // 水平速度收細 + 向鍋心拉，牛肉粒傾向拋高而唔係飛出去
-        c.vel.x = c.vel.x * 0.2 - c.pos.x * 2.2 * strength + (Math.random() - 0.5) * 0.4;
-        c.vel.z = c.vel.z * 0.2 - c.pos.z * 2.2 * strength + (Math.random() - 0.5) * 0.4;
-        // 按飛行時間計角速度，保證空中轉 ~180°-270° 翻到新面；繞一條隨機水平軸翻
+        // 水平速度收細 + 向鍋心拉 + 沿抽嘅方向帶少少，牛肉粒傾向拋高而唔係飛出去
+        const dirX = dir ? dir.x * 0.5 * strength : 0;
+        const dirZ = dir ? -dir.y * 0.5 * strength : 0;
+        c.vel.x = c.vel.x * 0.2 - c.pos.x * 2.2 * strength + dirX + (Math.random() - 0.5) * 0.4;
+        c.vel.z = c.vel.z * 0.2 - c.pos.z * 2.2 * strength + dirZ + (Math.random() - 0.5) * 0.4;
+        // 輕力固定翻一面（90°）；中力半圈；高力先會轉一圈以上
         const airT = 2 * up / CFG.gravity;
-        const turns = Math.PI * (1 + Math.random() * 0.5); // 半翻 ~ 3/4 翻
-        const axisA = Math.random() * Math.PI * 2;
-        c.angVel.set(Math.cos(axisA) * turns / airT, (Math.random() - 0.5) * 3, Math.sin(axisA) * turns / airT);
-        c.state = 'air';
+        let turns;
+        if (force < 0.35) turns = Math.PI * 0.5;
+        else if (force < 0.72) turns = THREE.MathUtils.lerp(Math.PI * 0.5, Math.PI, (force - 0.35) / 0.37);
+        else turns = THREE.MathUtils.lerp(Math.PI, Math.PI * 2.25, (force - 0.72) / 0.28);
+        const jitter = force < 0.35 ? 0 : (Math.random() - 0.5) * 0.16;
+        const axisA = baseA + jitter;
+        c.angVel.set(Math.cos(axisA) * turns / airT, (Math.random() - 0.5) * force * 0.8, Math.sin(axisA) * turns / airT);
+        c.state = 'air'; c.burnFace = -1; c.burnTime = 0; // 拋起 reset 燶計時
       }
       lastFlick = strength;
     }
@@ -471,7 +576,7 @@
           tmpQ.setFromAxisAngle(tmpV.set(0, 1, 0), 5 * dt);
           c.quat.premultiply(tmpQ);
           c.outTimer += dt;
-          c.mesh.material.forEach((m) => { m.transparent = true; m.opacity = Math.max(0, 1 - c.outTimer * 1.4); });
+          (Array.isArray(c.mesh.material) ? c.mesh.material : [c.mesh.material]).forEach((m) => { m.transparent = true; m.opacity = Math.max(0, 1 - c.outTimer * 1.4); });
           if (c.outTimer > 0.8) toRemove.push(c);
         } else if (c.state === 'out') {
           const rr = Math.hypot(c.pos.x, c.pos.z);
@@ -489,7 +594,7 @@
             c.pos.addScaledVector(c.vel, dt);
           }
           c.outTimer += dt;
-          c.mesh.material.forEach((m) => { m.transparent = true; m.opacity = Math.max(0, 1 - c.outTimer); });
+          (Array.isArray(c.mesh.material) ? c.mesh.material : [c.mesh.material]).forEach((m) => { m.transparent = true; m.opacity = Math.max(0, 1 - c.outTimer); });
           if (c.outTimer > 1.1) respawn(c);
         } else if (c.state === 'air') {
           c.vel.addScaledVector(g, dt);
@@ -527,7 +632,7 @@
           // 貼鑊滑動
           const ax = g.x, az = g.z;
           c.vel.x += ax * dt; c.vel.z += az * dt;
-          const damp = Math.exp(-3.2 * dt);
+          const damp = Math.exp(-2.4 * dt);   // 有油，滑啲
           c.vel.x *= damp; c.vel.z *= damp;
           c.pos.x += c.vel.x * dt; c.pos.z += c.vel.z * dt;
           // 鑊邊擋住（留大半邊牛身，角位都唔會插入鑊邊）
@@ -553,6 +658,24 @@
           }
           c.cook[best] = Math.min(1, c.cook[best] + dt / CFG.cookTime);
           paintCook(c, best);
+          // 燶 = 同一面連續煎 CFG.burnLimit 秒；翻面即 reset
+          if (best !== c.burnFace) { c.burnFace = best; c.burnTime = 0; }
+          c.burnTime += dt;
+          // 自動機制：六面金黃自動起菜；連續煎燶自動丟棄換新牛
+          if (c.cook.every((v) => v >= CFG.goldenLo)) {
+            c.state = 'serve'; c.outTimer = 0; c.vel.set(0, 0, 0);
+            served++;
+            toast(`起菜！${served}/${CFG.cubes}`);
+            sizzle && sizzle.serve();
+          } else if (c.burnTime >= CFG.burnLimit) {
+            const r = Math.hypot(c.pos.x, c.pos.z);
+            const nx = r > 0.01 ? c.pos.x / r : Math.cos(Math.random() * Math.PI * 2);
+            const nz = r > 0.01 ? c.pos.z / r : Math.sin(Math.random() * Math.PI * 2);
+            c.vel.set(nx * 1.2, 0.8, nz * 1.2);
+            c.state = 'out'; c.outTimer = 0;
+            toast('燶咗！自動換新牛 🗑');
+            sizzle && sizzle.bin();
+          }
           // 停低嗰陣慢慢對齊返正 — 全部牛都係軸對齊，互相碰撞先會準
           if (sp < 0.12) {
             tmpQ.copy(c.quat);
@@ -588,6 +711,22 @@
       for (const c of cubes) {
         c.mesh.position.copy(c.pos);
         c.mesh.quaternion.copy(c.quat);
+        const ready = c.state === 'rest' && c.cook.every((v) => v >= CFG.goldenLo);
+        c.readyFx.visible = ready;
+        if (ready) {
+          c.readyTime += dt;
+          c.readyFx.position.copy(c.pos);
+          const pulse = 1 + Math.sin(c.readyTime * 5) * 0.13;
+          c.readyRing.scale.setScalar(pulse);
+          c.readyRing.material.opacity = 0.55 + Math.sin(c.readyTime * 5) * 0.25;
+          for (let n = 0; n < c.readyStars.length; n++) {
+            const a = c.readyTime * 1.8 + n * Math.PI * 2 / c.readyStars.length;
+            const star = c.readyStars[n];
+            star.position.set(Math.cos(a) * S * 0.78, Math.sin(c.readyTime * 3 + n) * 0.045 + 0.025, Math.sin(a) * S * 0.78);
+            star.rotation.y = -a;
+            star.scale.setScalar(0.75 + Math.sin(c.readyTime * 6 + n) * 0.28);
+          }
+        }
       }
       for (const c of toRemove) {
         c.mesh.removeFromParent();
@@ -601,10 +740,11 @@
       c.vel.set(0, 0, 0); c.angVel.set(0, 0, 0);
       c.quat.setFromEuler(new THREE.Euler(0, Math.random() * Math.PI * 2, 0));
       c.cook = [0, 0, 0, 0, 0, 0];
+      c.burnFace = -1; c.burnTime = 0;
       c.texLevel = [-1, -1, -1, -1, -1, -1];
       for (let f = 0; f < FACE_COUNT; f++) paintCook(c, f);
       c.state = 'rest'; c.outTimer = 0;
-      c.mesh.material.forEach((m) => { m.opacity = 1; m.transparent = false; });
+      (Array.isArray(c.mesh.material) ? c.mesh.material : [c.mesh.material]).forEach((m) => { m.opacity = 1; m.transparent = false; });
     }
 
     // =================== 音效（WebAudio 合成） ===================
@@ -674,9 +814,7 @@
     let dragging = null;
     canvas.addEventListener('pointerdown', (e) => { dragging = { x: e.clientX, y: e.clientY, t: performance.now(), vy: 0, lastY: e.clientY, lastT: performance.now() }; canvas.setPointerCapture(e.pointerId); });
 
-    // =================== 點牛肉互動 ===================
-    const raycaster = new THREE.Raycaster();
-    const ndc = new THREE.Vector2();
+    // =================== 提示文字 ===================
     const toastEl = document.getElementById('toast');
     let toastTimer = 0;
     function toast(msg) {
@@ -684,36 +822,7 @@
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => { toastEl.style.opacity = 0; }, 900);
     }
-    function cubeAt(cx, cy) {
-      ndc.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
-      raycaster.setFromCamera(ndc, camera);
-      const hits = raycaster.intersectObjects(cubes.map((c) => c.mesh));
-      if (!hits.length) return null;
-      return cubes.find((c) => c.mesh === hits[0].object) || null;
-    }
     let served = 0;
-    function tapCube(c) {
-      if (!running || c.state !== 'rest') return;
-      const allGold = c.cook.every((v) => v >= CFG.goldenLo && v <= CFG.goldenHi);
-      const anyOver = c.cook.some((v) => v > CFG.goldenHi);
-      if (allGold) {
-        c.state = 'serve'; c.outTimer = 0; c.vel.set(0, 0, 0);
-        served++;
-        toast(`起菜！${served}/${CFG.cubes}`);
-        sizzle && sizzle.serve();
-      } else if (anyOver) {
-        // 燶咗 → 掉咗換新牛
-        const r = Math.hypot(c.pos.x, c.pos.z);
-        const nx = r > 0.01 ? c.pos.x / r : Math.cos(Math.random() * Math.PI * 2);
-        const nz = r > 0.01 ? c.pos.z / r : Math.sin(Math.random() * Math.PI * 2);
-        c.vel.set(nx * 1.2, 0.8, nz * 1.2);
-        c.state = 'out'; c.outTimer = 0;
-        toast('燶咗！掉咗換新牛 🗑');
-        sizzle && sizzle.bin();
-      } else {
-        toast('未煎好晒，繼續拋！');
-      }
-    }
     canvas.addEventListener('pointermove', (e) => {
       if (!dragging) return;
       const now = performance.now();
@@ -727,11 +836,6 @@
     });
     canvas.addEventListener('pointerup', (e) => {
       if (!dragging) return;
-      const moved = Math.hypot(e.clientX - dragging.x, e.clientY - dragging.y);
-      if (moved < 14 && performance.now() - dragging.t < 500) {
-        const c = cubeAt(e.clientX, e.clientY);
-        if (c) tapCube(c);
-      }
       if (!input.motionOn && dragging.vy < -1.6) doFlick(Math.min(1.5, -dragging.vy / 3)); // 快速上掃 = 拋鑊
       if (!input.motionOn) { input.targetTiltX = 0; input.targetTiltZ = 0; }
       dragging = null;
@@ -746,12 +850,12 @@
 
     function goldenCount() {
       let n = 0;
-      for (const c of cubes) for (const v of c.cook) if (v >= CFG.goldenLo && v <= CFG.goldenHi) n++;
+      for (const c of cubes) for (const v of c.cook) if (v >= CFG.goldenLo) n++;
       return n;
     }
     function avgCook() {
       let s = 0;
-      for (const c of cubes) for (const v of c.cook) s += Math.min(v, CFG.goldenHi) - (v > CFG.goldenHi ? (v - CFG.goldenHi) : 0);
+      for (const c of cubes) for (const v of c.cook) s += Math.min(v, 1);
       return s / (CFG.cubes * 6 * CFG.goldenHi);
     }
     function endRound(win) {
@@ -778,7 +882,9 @@
 
     // =================== 除錯面板 ===================
     const debugEl = document.getElementById('debug');
-    document.getElementById('debugBtn').addEventListener('click', () => { debugEl.hidden = !debugEl.hidden; });
+    const debugBtnEl = document.getElementById('debugBtn');
+    if (Q.has('debug')) debugBtnEl.hidden = false;   // ?debug=1 先會顯示
+    debugBtnEl.addEventListener('click', () => { debugEl.hidden = !debugEl.hidden; });
     let lastFired = 0;
     function updateDebug() {
       if (debugEl.hidden) return;
@@ -789,7 +895,9 @@
         `g ${a.x.toFixed(1)} ${a.y.toFixed(1)} ${a.z.toFixed(1)}\n` +
         `tiltX ${input.tiltX.toFixed(2)}  tiltZ ${input.tiltZ.toFixed(2)}\n` +
         `peak ${input.peakAccel.toFixed(1)}  TH ${CFG.flickThresh}\n` +
-        `lastFlick ${lastFired.toFixed(2)}  motion ${input.motionOn ? 'on' : 'off'}`;
+        `lastFlick ${lastFired.toFixed(2)}  motion ${input.motionOn ? 'on' : 'off'}
+` +
+        `方向 ${FLIP_MODES[flipMode % FLIP_MODES.length][0]}`;
     }
     function threshBtn(d) {
       CFG.flickThresh = Math.max(4, CFG.flickThresh + d);
@@ -797,12 +905,17 @@
     }
     // 面板下方加 -/+ 掣
     const thrRow = document.createElement('div'); thrRow.className = 'row';
-    thrRow.innerHTML = '<button id="thrDn">靈敏度＋</button><button id="thrUp">靈敏度－</button>';
+    thrRow.innerHTML = '<button id="thrDn">靈敏度＋</button><button id="thrUp">靈敏度－</button><button id="flipBtn">翻轉方向</button>';
     debugEl.appendChild(thrRow);
     thrRow.querySelector('#thrDn').addEventListener('click', () => threshBtn(-1));
     thrRow.querySelector('#thrUp').addEventListener('click', () => threshBtn(1));
+    thrRow.querySelector('#flipBtn').addEventListener('click', () => {
+      flipMode = (flipMode + 1) % FLIP_MODES.length;
+      localStorage.setItem('dicebeef.flipMode', flipMode);
+      applyFlip();
+    });
     const _doFlick = doFlick;
-    doFlick = (s) => { lastFired = s; _doFlick(s); };
+    doFlick = (s, d) => { lastFired = s; _doFlick(s, d); };
 
     // =================== 按鈕 ===================
     document.getElementById('helpBtn').addEventListener('click', () => { document.getElementById('helpOverlay').hidden = false; });
@@ -820,6 +933,10 @@
     function resize() {
       renderer.setSize(innerWidth, innerHeight);
       camera.aspect = innerWidth / innerHeight;
+      // 直向螢幕越窄 → 鏡頭拉得越遠，成個鑊要睇得晒
+      const k = Math.min(1, camera.aspect / 0.9);
+      camera.position.set(0, 2.0 / k, 1.15 / k);
+      camera.lookAt(0, 0, 0.05);
       camera.updateProjectionMatrix();
     }
     addEventListener('resize', resize); resize();
@@ -834,8 +951,14 @@
       input.tiltZ += (input.targetTiltZ - input.tiltZ) * Math.min(1, dt * 10);
       panGroup.rotation.x = input.tiltX;
       panGroup.rotation.z = input.tiltZ;
+      // 傾斜越大托高少少，外圈唔會插穿爐面（傾斜中心照舊喺鑊中心）
+      const tiltMag = Math.hypot(input.tiltX, input.tiltZ);
+      panGroup.position.y = Math.max(0, Math.sin(tiltMag) * 0.42 - 0.07);
       // 爐火微微閃爍
       burner.material.opacity = 0.5 + Math.sin(performance.now() * 0.02) * 0.08;
+      // 油面極微嘅亮度呼吸
+      const tNow = performance.now() * 0.001;
+      oil.material.roughness = 0.28 + Math.sin(tNow * 0.8) * 0.06;
 
       if (running) {
         acc += dt;
@@ -876,7 +999,6 @@
         }
         return +m.toFixed(3);
       },
-      tap(i) { const c = cubes[i]; if (c) tapCube(c); },
       get served() { return served; },
       get cubes() { return cubes; },
       facePixel(i, f) {
