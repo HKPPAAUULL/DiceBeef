@@ -133,6 +133,8 @@
       panR: 0.42,               // 鑊底內半徑（物理用）
       catchR: 0.47,             // 接住牛肉粒嘅最大半徑
       panModelScale: 1.05,      // KayKit 鍋模型縮放（外半徑 = 0.5 * scale）
+      rimTop: 0.3,              // 鑊邊頂高度（飛出嗰粒托起越過用呢個）
+      rimOut: 0.56,             // 鑊邊外半徑，過咗先算真係甩出去
       maxTilt: THREE.MathUtils.degToRad(34),
       tiltGain: 1.0,            // 裝置角度 -> 鑊角度 倍率
       flickThresh: Number(Q.get('flick')) || 8,   // 拋鑊加速度閾值 m/s^2
@@ -452,9 +454,9 @@
       for (const c of cubes) {
         if (c.state === 'out') {
           const rr = Math.hypot(c.pos.x, c.pos.z);
-          if (rr < CFG.panR + 0.08) {
-            // 未過鑊邊之前：托住喺鑊面高度向外滑，唔會穿落鑊底
-            c.pos.y = Math.max(c.pos.y, H);
+          if (rr < CFG.rimOut) {
+            // 未過鑊邊之前：托上邊緣高度向外滑，唔會穿過牆身
+            c.pos.y += (CFG.rimTop - c.pos.y) * Math.min(1, 10 * dt);
             c.vel.y = 0;
             if (rr > 0.001) {
               const nx = c.pos.x / rr, nz = c.pos.z / rr;
@@ -471,6 +473,11 @@
         } else if (c.state === 'air') {
           c.vel.addScaledVector(g, dt);
           c.pos.addScaledVector(c.vel, dt);
+          // 空中都唔畀陷入牆身：水平位置夾喺接住範圍內
+          const ra = Math.hypot(c.pos.x, c.pos.z);
+          if (ra > CFG.catchR) {
+            c.pos.x *= CFG.catchR / ra; c.pos.z *= CFG.catchR / ra;
+          }
           // 旋轉
           const w = c.angVel, wl = w.length();
           if (wl > 0.001) {
@@ -480,7 +487,9 @@
           if (c.pos.y <= H && c.vel.y < 0) {
             const r = Math.hypot(c.pos.x, c.pos.z);
             if (r < CFG.catchR) {
-              // 落返鑊：snap 去最近嘅面
+              // 落返鑊：拉返入牆內範圍先 snap 去最近嘅面
+              const limR = CFG.panR - S * 0.75;
+              if (r > limR) { c.pos.x *= limR / r; c.pos.z *= limR / r; }
               c.pos.y = H;
               if (c.vel.y < -1.2) { c.vel.y *= -0.18; c.angVel.multiplyScalar(0.4); }
               else {
