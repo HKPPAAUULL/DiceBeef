@@ -189,7 +189,10 @@
         const gx = input.gravity.x, gy = input.gravity.y, gz = input.gravity.z;
         const ux = gx * sgn, uy = gy * sgn, uz = Math.abs(gz);
         // 將向上向量投影到螢幕座標 → 鍋傾斜方向（u 偏向邊邊，對面嗰邊就係低）
-        const ang = ((screen.orientation && screen.orientation.angle) || window.orientation || 0) * Math.PI / 180;
+        // iPadOS Safari 直向時會誤報 angle=90：畫面直向而角度報橫向 → 修正返 0
+        let angDeg = ((screen.orientation && screen.orientation.angle) || window.orientation || 0);
+        if (innerHeight >= innerWidth && (angDeg === 90 || angDeg === 270)) angDeg -= 90;
+        const ang = angDeg * Math.PI / 180;
         const cs = Math.cos(ang), sn = Math.sin(ang);
         const sgx = ux * cs + uy * sn;
         const sgy = -ux * sn + uy * cs;
