@@ -282,10 +282,9 @@
       panReady = true;
     });
 
-    // =================== 骰子牛 ===================
-    // 骰面：1-6 對面相加=7；BoxGeometry 面序 +x,-x,+y,-y,+z,-z
-    const FACE_PIPS = [1, 6, 2, 5, 3, 4];
-    function faceTexture(pips) {
+    // =================== 骰子牛（方形牛肉粒，六面各自煎色） ===================
+    const FACE_COUNT = 6; // BoxGeometry 面序 +x,-x,+y,-y,+z,-z
+    function faceTexture() {
       const c = document.createElement('canvas');
       c.width = c.height = 128;
       const x = c.getContext('2d');
@@ -298,22 +297,11 @@
         x.bezierCurveTo(40, 10 + i * 22, 90, 30 + i * 20, 140, 15 + i * 22);
         x.stroke();
       }
-      // 骰點
-      const dots = {
-        1: [[64, 64]],
-        2: [[38, 38], [90, 90]],
-        3: [[34, 34], [64, 64], [94, 94]],
-        4: [[38, 38], [90, 38], [38, 90], [90, 90]],
-        5: [[34, 34], [94, 34], [64, 64], [34, 94], [94, 94]],
-        6: [[36, 30], [92, 30], [36, 64], [92, 64], [36, 98], [92, 98]],
-      }[pips];
-      x.fillStyle = '#8e2f2f';
-      for (const [dx, dy] of dots) { x.beginPath(); x.arc(dx, dy, 11, 0, 7); x.fill(); }
       const t = new THREE.CanvasTexture(c);
       t.colorSpace = THREE.SRGBColorSpace;
       return t;
     }
-    const faceTex = FACE_PIPS.map(faceTexture);
+    const faceTex = Array.from({ length: FACE_COUNT }, faceTexture);
     const TINT_RAW = new THREE.Color(0xffffff);
     const TINT_GOLD = new THREE.Color(0xb5651d);
     const TINT_BURNT = new THREE.Color(0x170c05);
@@ -332,7 +320,7 @@
       new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1),
     ];
     function spawnCube(i, fresh) {
-      const mats = FACE_PIPS.map((_, f) => new THREE.MeshStandardMaterial({
+      const mats = faceTex.map((tex, f) => new THREE.MeshStandardMaterial({
         map: faceTex[f], roughness: 0.55, metalness: 0.02,
       }));
       const mesh = new THREE.Mesh(geo, mats);
