@@ -507,6 +507,31 @@
           c.cook[best] = Math.min(1, c.cook[best] + dt / CFG.cookTime);
           paintCook(c, best);
         }
+      }
+      // 粒對粒碰撞：分開重疊＋沿法線交換速度
+      const minD = S * 1.02;
+      for (let i = 0; i < cubes.length; i++) {
+        for (let j = i + 1; j < cubes.length; j++) {
+          const A = cubes[i], B = cubes[j];
+          if (A.state === 'out' || B.state === 'out') continue;
+          const dx = B.pos.x - A.pos.x, dy = B.pos.y - A.pos.y, dz = B.pos.z - A.pos.z;
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 >= minD * minD || d2 === 0) continue;
+          const d = Math.sqrt(d2), nx = dx / d, ny = dy / d, nz = dz / d;
+          const ov = (minD - d) / 2;
+          A.pos.x -= nx * ov; A.pos.y -= ny * ov; A.pos.z -= nz * ov;
+          B.pos.x += nx * ov; B.pos.y += ny * ov; B.pos.z += nz * ov;
+          const vn = (B.vel.x - A.vel.x) * nx + (B.vel.y - A.vel.y) * ny + (B.vel.z - A.vel.z) * nz;
+          if (vn < 0) {
+            const imp = -vn * 0.65;
+            A.vel.x -= nx * imp; A.vel.y -= ny * imp; A.vel.z -= nz * imp;
+            B.vel.x += nx * imp; B.vel.y += ny * imp; B.vel.z += nz * imp;
+          }
+          if (A.state === 'rest') A.pos.y = H;
+          if (B.state === 'rest') B.pos.y = H;
+        }
+      }
+      for (const c of cubes) {
         c.mesh.position.copy(c.pos);
         c.mesh.quaternion.copy(c.quat);
       }
@@ -699,6 +724,13 @@
       flick(s) { doFlick(s || 1); },
       state() {
         return cubes.map((c) => ({ st: c.state, y: +c.pos.y.toFixed(3), cook: c.cook.map((v) => +v.toFixed(2)) }));
+      },
+      minDist() {
+        let m = 9;
+        for (let i = 0; i < cubes.length; i++) for (let j = i + 1; j < cubes.length; j++) {
+          const d = cubes[i].pos.distanceTo(cubes[j].pos); if (d < m) m = d;
+        }
+        return +m.toFixed(3);
       },
       facePixel(i, f) {
         const c = cubes[i]; if (!c) return null;
