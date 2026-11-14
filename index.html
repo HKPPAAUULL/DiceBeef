@@ -405,7 +405,7 @@
       sizzle && sizzle.burst();
       for (const c of cubes) {
         if (c.state === 'out') continue;
-        const up = 2.6 * strength + Math.random() * 0.9;
+        const up = 3.6 * strength + Math.random() * 1.0;
         c.vel.y += up;
         // 水平速度收細 + 向鍋心拉，牛肉粒傾向拋高而唔係飛出去
         c.vel.x = c.vel.x * 0.2 - c.pos.x * 2.2 * strength + (Math.random() - 0.5) * 0.4;
