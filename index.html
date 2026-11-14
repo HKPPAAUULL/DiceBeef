@@ -149,6 +149,7 @@
       targetTiltX: 0, targetTiltZ: 0,
       lastAccel: new THREE.Vector3(),
       gravity: new THREE.Vector3(0, 0, -9.8), // 平滑後嘅重力向量（裝置座標）
+      gravitySign: 0,            // 第一次讀數時自動偵測 z 方向慣例
       peakAccel: 0,
       motionOn: false,
       beta: 0, gamma: 0,
@@ -181,19 +182,24 @@
         // 平滑重力向量（裝置座標）
         input.gravity.lerp(tmpG.set(g.x, g.y, g.z), 0.25);
         input.lastAccel.set(g.x, g.y, g.z);
-        // 將重力投影到螢幕座標 → 鍋傾斜方向（邊邊低就向邊邊滾）
+        // 第一次讀數時記低 z 方向慣例（有啲機報向下重力、有啲報向上推力）
+        if (input.gravitySign === 0) input.gravitySign = Math.sign(input.gravity.z) || 1;
+        // u = 「世界向上」喺裝置座標嘅方向，兩種慣例統一到 flat 時 u≈+z
+        const sgn = input.gravitySign;
+        const gx = input.gravity.x, gy = input.gravity.y, gz = input.gravity.z;
+        const ux = gx * sgn, uy = gy * sgn, uz = Math.abs(gz);
+        // 將向上向量投影到螢幕座標 → 鍋傾斜方向（u 偏向邊邊，對面嗰邊就係低）
         const ang = ((screen.orientation && screen.orientation.angle) || window.orientation || 0) * Math.PI / 180;
         const cs = Math.cos(ang), sn = Math.sin(ang);
-        const gx = input.gravity.x, gy = input.gravity.y, gz = input.gravity.z;
-        const sgx = gx * cs + gy * sn;   // 重力沿螢幕右方嘅分量
-        const sgy = -gx * sn + gy * cs;  // 重力沿螢幕上方嘅分量
-        input.targetTiltX = THREE.MathUtils.clamp(-Math.atan2(sgy, -gz) * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
-        input.targetTiltZ = THREE.MathUtils.clamp(-Math.atan2(sgx, -gz) * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
+        const sgx = ux * cs + uy * sn;
+        const sgy = -ux * sn + uy * cs;
+        input.targetTiltX = THREE.MathUtils.clamp(Math.atan2(sgy, uz) * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
+        input.targetTiltZ = THREE.MathUtils.clamp(Math.atan2(sgx, uz) * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
         input.motionOn = true;
-        // 拋鑊：向上嘅加速度 = 加速度沿「反重力」方向嘅投影，唔受拎機角度影響
+        // 拋鑊：沿「世界向上」方向嘅加速度，唔受拎機角度影響
         if (a && a.x != null) {
           const gl = input.gravity.length() || 1;
-          const up = -(a.x * gx + a.y * gy + a.z * gz) / gl;
+          const up = (a.x * ux + a.y * uy + a.z * uz) / gl;
           const mag = Math.hypot(a.x, a.y, a.z);
           // 主訊號係向上分量；力度訊號做後備，方向估錯都唔會漏判
           const sig = Math.max(up, mag * 0.7);
@@ -586,10 +592,11 @@
     function updateDebug() {
       if (debugEl.hidden) return;
       const a = input.lastAccel;
+      const ang = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
       debugEl.textContent =
-        `beta ${input.beta.toFixed(0)}  gamma ${input.gamma.toFixed(0)}\n` +
+        `ang ${ang}  sgn ${input.gravitySign}\n` +
+        `g ${a.x.toFixed(1)} ${a.y.toFixed(1)} ${a.z.toFixed(1)}\n` +
         `tiltX ${input.tiltX.toFixed(2)}  tiltZ ${input.tiltZ.toFixed(2)}\n` +
-        `acc ${a.x.toFixed(1)} ${a.y.toFixed(1)} ${a.z.toFixed(1)}\n` +
         `peak ${input.peakAccel.toFixed(1)}  TH ${CFG.flickThresh}\n` +
         `lastFlick ${lastFired.toFixed(2)}  motion ${input.motionOn ? 'on' : 'off'}`;
     }
