@@ -31,6 +31,12 @@
       bottom: calc(16px + env(safe-area-inset-bottom));
     }
     #helpBtn { right: calc(16px + env(safe-area-inset-right)); }
+    #toast {
+      position: fixed; left: 50%; top: 18%; transform: translateX(-50%);
+      background: rgba(20,12,8,0.85); color: #ffe8c8; padding: 10px 22px;
+      border-radius: 20px; font-size: 20px; font-weight: 700; z-index: 20;
+      transition: opacity 0.25s; pointer-events: none;
+    }
     #debugBtn { left: calc(16px + env(safe-area-inset-left)); font-size: 14px; }
 
     .overlay {
@@ -80,6 +86,7 @@
   <button class="cornerBtn" id="helpBtn" aria-label="說明">?</button>
   <button class="cornerBtn" id="debugBtn" aria-label="數據">數</button>
   <pre id="debug" hidden></pre>
+  <div id="toast" hidden></div>
 
   <div class="overlay" id="startOverlay">
     <div class="panel">
@@ -90,8 +97,8 @@
         <li>📱 <b>iPad 打直拎住玩最易控制！</b></li>
         <li>📱 傾斜 iPad：牛肉粒喺鑊度滑動</li>
         <li>🍳 向上快甩（拋鑊）：牛肉粒拋起翻滾</li>
-        <li>🎲 每粒牛係一粒骰：六面都要煎到金黃</li>
-        <li>🔥 一面煎太耐會燶；甩出鑊外扣一粒</li>
+        <li>👆 <b>點牛肉粒</b>：六面金黃 → 起菜上碟；燶咗 → 掉咗換新牛</li>
+        <li>🍽 目標：全部牛肉粒起菜上碟！</li>
       </ul>
     </div>
   </div>
@@ -102,8 +109,9 @@
       <p class="sub">
         1. <b>iPad 打直拎住玩最易控制。</b>傾斜 iPad，平底鑊會跟住斜，牛肉粒滑去低嗰邊。<br/><br/>
         2. 快速向上「拋」一下 iPad（唔使真係放手！），牛肉粒會彈起翻滾，落返鑊度就翻面。<br/><br/>
-        3. 貼住鑊底嗰面會慢慢煎熟：生粉紅 → 金黃 → 燶黑。目標係限時內煎金黃晒 30 個面。<br/><br/>
-        4. 牛肉粒甩出鑊外會冧落枱，扣一粒重新嚟過。
+        3. 貼住鑊底嗰面會慢慢煎熟：生粉紅 → 金黃 → 燶黑。<br/><br/>
+        4. <b>點牛肉粒</b>：六面都金黃 → 起菜上碟；有任何一面燶咗 → 掉咗換一粒新牛。目標係限時內全部牛肉粒起菜！<br/><br/>
+        5. 牛肉粒甩出鑊外會冧落枱，扣一粒重新嚟過。
       </p>
       <button class="bigBtn" id="closeHelpBtn">明晒！</button>
     </div>
@@ -348,7 +356,8 @@
     }
 
     const S = CFG.cubeSize, H = S / 2;
-    const cubes = [];
+    const cubes = [];      // 喺鑊度嘅（起菜後會移除）
+    const allCubes = [];   // 包括起咗菜嘅，restart 用
     const geo = new THREE.BoxGeometry(S, S, S);
     const FACE_NORMALS = [
       new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
@@ -389,6 +398,7 @@
       mesh.quaternion.copy(cube.quat);
       panGroup.add(mesh);
       cubes.push(cube);
+      allCubes.push(cube);
       return cube;
     }
     for (let i = 0; i < CFG.cubes; i++) spawnCube(i, true);
@@ -404,7 +414,7 @@
     function doFlick(strength) {
       sizzle && sizzle.burst();
       for (const c of cubes) {
-        if (c.state === 'out') continue;
+        if (c.state === 'out' || c.state === 'serve') continue;
         const up = 3.6 * strength + Math.random() * 1.0;
         c.vel.y += up;
         // 水平速度收細 + 向鍋心拉，牛肉粒傾向拋高而唔係飛出去
@@ -451,8 +461,17 @@
     function step(dt) {
       const g = gInPan().clone();
       flickCooldown = Math.max(0, flickCooldown - dt);
+      const toRemove = [];
       for (const c of cubes) {
-        if (c.state === 'out') {
+        if (c.state === 'serve') {
+          // 起菜：浮起轉圈淡出，之後移除
+          c.pos.y += 1.6 * dt;
+          tmpQ.setFromAxisAngle(tmpV.set(0, 1, 0), 5 * dt);
+          c.quat.premultiply(tmpQ);
+          c.outTimer += dt;
+          c.mesh.material.forEach((m) => { m.transparent = true; m.opacity = Math.max(0, 1 - c.outTimer * 1.4); });
+          if (c.outTimer > 0.8) toRemove.push(c);
+        } else if (c.state === 'out') {
           const rr = Math.hypot(c.pos.x, c.pos.z);
           if (rr < CFG.rimOut) {
             // 未過鑊邊之前：托上邊緣高度向外滑，唔會穿過牆身
@@ -545,7 +564,8 @@
       for (let i = 0; i < cubes.length; i++) {
         for (let j = i + 1; j < cubes.length; j++) {
           const A = cubes[i], B = cubes[j];
-          if (A.state === 'out' || B.state === 'out') continue;
+          if (A.state !== 'rest' && A.state !== 'air') continue;
+          if (B.state !== 'rest' && B.state !== 'air') continue;
           const dx = B.pos.x - A.pos.x, dy = B.pos.y - A.pos.y, dz = B.pos.z - A.pos.z;
           const d2 = dx * dx + dy * dy + dz * dz;
           if (d2 >= minD * minD || d2 === 0) continue;
@@ -566,6 +586,10 @@
       for (const c of cubes) {
         c.mesh.position.copy(c.pos);
         c.mesh.quaternion.copy(c.quat);
+      }
+      for (const c of toRemove) {
+        c.mesh.removeFromParent();
+        const i = cubes.indexOf(c); if (i >= 0) cubes.splice(i, 1);
       }
     }
 
@@ -620,6 +644,46 @@
     // =================== 桌面除錯操作 ===================
     let dragging = null;
     canvas.addEventListener('pointerdown', (e) => { dragging = { x: e.clientX, y: e.clientY, t: performance.now(), vy: 0, lastY: e.clientY, lastT: performance.now() }; canvas.setPointerCapture(e.pointerId); });
+
+    // =================== 點牛肉互動 ===================
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const toastEl = document.getElementById('toast');
+    let toastTimer = 0;
+    function toast(msg) {
+      toastEl.textContent = msg; toastEl.hidden = false; toastEl.style.opacity = 1;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toastEl.style.opacity = 0; }, 900);
+    }
+    function cubeAt(cx, cy) {
+      ndc.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+      const hits = raycaster.intersectObjects(cubes.map((c) => c.mesh));
+      if (!hits.length) return null;
+      return cubes.find((c) => c.mesh === hits[0].object) || null;
+    }
+    let served = 0;
+    function tapCube(c) {
+      if (!running || c.state !== 'rest') return;
+      const allGold = c.cook.every((v) => v >= CFG.goldenLo && v <= CFG.goldenHi);
+      const anyOver = c.cook.some((v) => v > CFG.goldenHi);
+      if (allGold) {
+        c.state = 'serve'; c.outTimer = 0; c.vel.set(0, 0, 0);
+        served++;
+        toast(`起菜！${served}/${CFG.cubes}`);
+        sizzle && sizzle.fanfare();
+      } else if (anyOver) {
+        // 燶咗 → 掉咗換新牛
+        const r = Math.hypot(c.pos.x, c.pos.z);
+        const nx = r > 0.01 ? c.pos.x / r : Math.cos(Math.random() * Math.PI * 2);
+        const nz = r > 0.01 ? c.pos.z / r : Math.sin(Math.random() * Math.PI * 2);
+        c.vel.set(nx * 1.2, 0.8, nz * 1.2);
+        c.state = 'out'; c.outTimer = 0;
+        toast('燶咗！掉咗換新牛 🗑');
+      } else {
+        toast('未煎好晒，繼續拋！');
+      }
+    }
     canvas.addEventListener('pointermove', (e) => {
       if (!dragging) return;
       const now = performance.now();
@@ -633,6 +697,11 @@
     });
     canvas.addEventListener('pointerup', (e) => {
       if (!dragging) return;
+      const moved = Math.hypot(e.clientX - dragging.x, e.clientY - dragging.y);
+      if (moved < 14 && performance.now() - dragging.t < 500) {
+        const c = cubeAt(e.clientX, e.clientY);
+        if (c) tapCube(c);
+      }
       if (!input.motionOn && dragging.vy < -1.6) doFlick(Math.min(1.5, -dragging.vy / 3)); // 快速上掃 = 拋鑊
       if (!input.motionOn) { input.targetTiltX = 0; input.targetTiltZ = 0; }
       dragging = null;
@@ -660,15 +729,19 @@
       ended = true; running = false;
       const g = goldenCount(), total = CFG.cubes * 6;
       const stars = win ? 3 : g >= total * 0.7 ? 2 : g >= total * 0.4 ? 1 : 0;
-      document.getElementById('endTitle').textContent = win ? 'Perfect！全部金黃！' : '時間到！';
+      document.getElementById('endTitle').textContent = win ? 'Perfect！全部起菜！' : '時間到！';
       document.getElementById('endStars').textContent = '★★★☆☆☆'.slice(3 - stars, 6 - stars);
-      document.getElementById('endScore').textContent = `金黃面數 ${g}/${total}` + (win ? '，廚神上身！' : '，再接再厲！');
+      document.getElementById('endScore').textContent = `起菜 ${served}/${CFG.cubes}・金黃面數 ${g}/${total}` + (win ? '，廚神上身！' : '，再接再厲！');
       document.getElementById('endOverlay').hidden = false;
       if (win && sizzle) sizzle.fanfare();
     }
 
     function resetGame() {
-      for (const c of cubes) respawn(c);
+      served = 0;
+      for (const c of allCubes) {
+        if (!cubes.includes(c)) { cubes.push(c); panGroup.add(c.mesh); }
+        respawn(c);
+      }
       timeLeft = CFG.roundTime; ended = false; running = true;
       document.getElementById('endOverlay').hidden = true;
     }
@@ -741,8 +814,8 @@
         timeLeft -= dt;
         timerEl.textContent = `⏱ ${Math.max(0, Math.ceil(timeLeft))}`;
         const g = goldenCount();
-        scoreEl.textContent = `🎲 金黃面數 ${g}/${CFG.cubes * 6}`;
-        if (g >= CFG.cubes * 6) endRound(true);
+        scoreEl.textContent = `🍽 起菜 ${served}/${CFG.cubes}`;
+        if (served >= CFG.cubes) endRound(true);
         else if (timeLeft <= 0) endRound(false);
       }
       updateDebug();
@@ -773,6 +846,9 @@
         }
         return +m.toFixed(3);
       },
+      tap(i) { const c = cubes[i]; if (c) tapCube(c); },
+      get served() { return served; },
+      get cubes() { return cubes; },
       facePixel(i, f) {
         const c = cubes[i]; if (!c) return null;
         const d = c.faces[f].ctx.getImageData(64, 64, 1, 1).data;
