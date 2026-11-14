@@ -630,6 +630,33 @@
           o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.13);
         },
         burst() { gain.gain.setTargetAtTime(0.16, ctx.currentTime, 0.05); gain.gain.setTargetAtTime(0.05, ctx.currentTime + 0.5, 0.3); },
+        // 起菜：上碟鐘聲「叮～」
+        serve() {
+          [880, 1760, 2637].forEach((f, i) => {
+            const o = ctx.createOscillator(), g = ctx.createGain();
+            o.frequency.value = f; o.type = 'sine';
+            const t = ctx.currentTime + i * 0.015;
+            g.gain.setValueAtTime(0.001, t);
+            g.gain.exponentialRampToValueAtTime(0.22 / (i + 1), t + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+            o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.95);
+          });
+          const o = ctx.createOscillator(), g = ctx.createGain();
+          o.frequency.value = 660; o.type = 'triangle';
+          const t = ctx.currentTime;
+          g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+          o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.45);
+        },
+        // 丟棄：低沉「篤」聲
+        bin() {
+          const o = ctx.createOscillator(), g = ctx.createGain();
+          o.type = 'sine';
+          o.frequency.setValueAtTime(180, ctx.currentTime);
+          o.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 0.18);
+          g.gain.setValueAtTime(0.25, ctx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+          o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.25);
+        },
         fanfare() {
           [523, 659, 784, 1047].forEach((f, i) => {
             const o = ctx.createOscillator(), g = ctx.createGain();
@@ -673,7 +700,7 @@
         c.state = 'serve'; c.outTimer = 0; c.vel.set(0, 0, 0);
         served++;
         toast(`起菜！${served}/${CFG.cubes}`);
-        sizzle && sizzle.fanfare();
+        sizzle && sizzle.serve();
       } else if (anyOver) {
         // 燶咗 → 掉咗換新牛
         const r = Math.hypot(c.pos.x, c.pos.z);
@@ -682,6 +709,7 @@
         c.vel.set(nx * 1.2, 0.8, nz * 1.2);
         c.state = 'out'; c.outTimer = 0;
         toast('燶咗！掉咗換新牛 🗑');
+        sizzle && sizzle.bin();
       } else {
         toast('未煎好晒，繼續拋！');
       }
