@@ -87,6 +87,7 @@
       <p class="sub">拎住 iPad 當鑊用！傾斜等牛肉粒滑動，<br/>向上快甩拋起翻面，六面煎到金黃就贏。</p>
       <button class="bigBtn" id="startBtn">開始</button>
       <ul class="tips">
+        <li>📱 <b>iPad 打直拎住玩最易控制！</b></li>
         <li>📱 傾斜 iPad：牛肉粒喺鑊度滑動</li>
         <li>🍳 向上快甩（拋鑊）：牛肉粒拋起翻滾</li>
         <li>🎲 每粒牛係一粒骰：六面都要煎到金黃</li>
@@ -99,7 +100,7 @@
     <div class="panel">
       <h1>點玩？</h1>
       <p class="sub">
-        1. 傾斜 iPad，平底鑊會跟住斜，牛肉粒滑去低嗰邊。<br/><br/>
+        1. <b>iPad 打直拎住玩最易控制。</b>傾斜 iPad，平底鑊會跟住斜，牛肉粒滑去低嗰邊。<br/><br/>
         2. 快速向上「拋」一下 iPad（唔使真係放手！），牛肉粒會彈起翻滾，落返鑊度就翻面。<br/><br/>
         3. 貼住鑊底嗰面會慢慢煎熟：生粉紅 → 金黃 → 燶黑。目標係限時內煎金黃晒 30 個面。<br/><br/>
         4. 牛肉粒甩出鑊外會冧落枱，扣一粒重新嚟過。
@@ -418,40 +419,52 @@
     }
 
     const DOWN_LOCALS = FACE_NORMALS;
-    function snapToFace(c) {
-      // 揀最向下嘅面，對齊到 -Y，再對齊最近嘅水平軸，收工整翻滾
+    // 將 quat snap 到最近嘅軸對齊（最向下面 → -Y，次軸 → +X）；回傳底面 index
+    function snapQuat(q) {
       let best = 0, bestY = 2;
       for (let f = 0; f < 6; f++) {
-        const y = tmpV.copy(DOWN_LOCALS[f]).applyQuaternion(c.quat).y;
+        const y = tmpV.copy(DOWN_LOCALS[f]).applyQuaternion(q).y;
         if (y < bestY) { bestY = y; best = f; }
       }
-      const nInPan = tmpV.copy(DOWN_LOCALS[best]).applyQuaternion(c.quat).clone();
+      const nInPan = tmpV.copy(DOWN_LOCALS[best]).applyQuaternion(q).clone();
       const qAlign = new THREE.Quaternion().setFromUnitVectors(nInPan.normalize(), new THREE.Vector3(0, -1, 0));
-      c.quat.premultiply(qAlign);
-      // 對齊次軸：揀另一條面軸中最接近 +X 嘅，扭正
+      q.premultiply(qAlign);
       let second = -1, bestX = -2;
       for (let f = 0; f < 6; f++) {
         if (f === best) continue;
-        const v = tmpV.copy(DOWN_LOCALS[f]).applyQuaternion(c.quat);
+        const v = tmpV.copy(DOWN_LOCALS[f]).applyQuaternion(q);
         if (Math.abs(v.y) > 0.5) continue;
         if (v.x > bestX) { bestX = v.x; second = f; }
       }
       if (second >= 0) {
-        const v = tmpV.copy(DOWN_LOCALS[second]).applyQuaternion(c.quat).clone();
+        const v = tmpV.copy(DOWN_LOCALS[second]).applyQuaternion(q).clone();
         v.y = 0; v.normalize();
         const qTwist = new THREE.Quaternion().setFromUnitVectors(v, new THREE.Vector3(1, 0, 0));
-        c.quat.premultiply(qTwist);
+        q.premultiply(qTwist);
       }
       return best;
     }
+    function snapToFace(c) { return snapQuat(c.quat); }
 
     function step(dt) {
       const g = gInPan().clone();
       flickCooldown = Math.max(0, flickCooldown - dt);
       for (const c of cubes) {
         if (c.state === 'out') {
-          c.vel.addScaledVector(g, dt);
-          c.pos.addScaledVector(c.vel, dt);
+          const rr = Math.hypot(c.pos.x, c.pos.z);
+          if (rr < CFG.panR + 0.08) {
+            // 未過鑊邊之前：托住喺鑊面高度向外滑，唔會穿落鑊底
+            c.pos.y = Math.max(c.pos.y, H);
+            c.vel.y = 0;
+            if (rr > 0.001) {
+              const nx = c.pos.x / rr, nz = c.pos.z / rr;
+              c.vel.x += nx * 1.5 * dt; c.vel.z += nz * 1.5 * dt;
+            }
+            c.pos.x += c.vel.x * dt; c.pos.z += c.vel.z * dt;
+          } else {
+            c.vel.addScaledVector(g, dt);
+            c.pos.addScaledVector(c.vel, dt);
+          }
           c.outTimer += dt;
           c.mesh.material.forEach((m) => { m.transparent = true; m.opacity = Math.max(0, 1 - c.outTimer); });
           if (c.outTimer > 1.1) respawn(c);
@@ -487,8 +500,8 @@
           const damp = Math.exp(-3.2 * dt);
           c.vel.x *= damp; c.vel.z *= damp;
           c.pos.x += c.vel.x * dt; c.pos.z += c.vel.z * dt;
-          // 鑊邊擋住
-          const r = Math.hypot(c.pos.x, c.pos.z), lim = CFG.panR - H * 0.7;
+          // 鑊邊擋住（留大半邊牛身，角位都唔會插入鑊邊）
+          const r = Math.hypot(c.pos.x, c.pos.z), lim = CFG.panR - S * 0.75;
           if (r > lim) {
             const nx = c.pos.x / r, nz = c.pos.z / r;
             c.pos.x = nx * lim; c.pos.z = nz * lim;
@@ -510,10 +523,16 @@
           }
           c.cook[best] = Math.min(1, c.cook[best] + dt / CFG.cookTime);
           paintCook(c, best);
+          // 停低嗰陣慢慢對齊返正 — 全部牛都係軸對齊，互相碰撞先會準
+          if (sp < 0.12) {
+            tmpQ.copy(c.quat);
+            snapQuat(tmpQ);
+            c.quat.slerp(tmpQ, 1 - Math.exp(-6 * dt));
+          }
         }
       }
       // 粒對粒碰撞：分開重疊＋沿法線交換速度
-      const minD = S * 1.02;
+      const minD = S * 1.05;
       for (let i = 0; i < cubes.length; i++) {
         for (let j = i + 1; j < cubes.length; j++) {
           const A = cubes[i], B = cubes[j];
