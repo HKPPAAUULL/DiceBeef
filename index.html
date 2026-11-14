@@ -147,8 +147,8 @@
       maxTilt: THREE.MathUtils.degToRad(34),
       tiltGain: 1.0,            // 裝置角度 -> 鑊角度 倍率
       flickThresh: Number(Q.get('flick')) || 8,   // 拋鑊加速度閾值 m/s^2
-      cookTime: 10,             // 一面由生煎到燶所需秒數（金黃喺中後段）
-      goldenLo: 0.45, goldenHi: 0.9, // 金黃區間：4.5s - 9s，過咗先算燶
+      cookTime: 14,             // 一面由生煎到燶所需秒數（金黃喺中後段）
+      goldenLo: 0.45, goldenHi: 0.9, // 金黃區間：6.3s - 12.6s，過咗先算燶
       roundTime: Number(Q.get('t')) || 120,
       gravity: 9.8,
     };
@@ -344,11 +344,11 @@
           const y = 18 + i * 30;
           ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(128, y + 8); ctx.stroke();
         }
-        if (t > 0.62) {
-          const burn = (t - 0.62) / 0.38;
+        if (t > 0.75) {
+          const burn = (t - 0.75) / 0.25;
           ctx.fillStyle = `rgba(44,20,6,${burn * 0.85})`; ctx.fillRect(0, 0, 128, 128);
-          if (t > 0.85) { // 燶邊
-            ctx.strokeStyle = `rgba(12,6,2,${Math.min(1, (t - 0.85) / 0.15)})`;
+          if (t > 0.9) { // 燶邊
+            ctx.strokeStyle = `rgba(12,6,2,${Math.min(1, (t - 0.9) / 0.1)})`;
             ctx.lineWidth = 16; ctx.strokeRect(8, 8, 112, 112);
           }
         }
