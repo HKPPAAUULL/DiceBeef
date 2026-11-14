@@ -66,7 +66,7 @@
     }
     #debug[hidden] { display: none; }
     #debug .row { display: flex; gap: 6px; margin-top: 6px; }
-    #debug button { flex: 1; font-size: 14px; padding: 2px 0; border-radius: 6px; border: 1px solid #4a6; background: #123; color: #9fe89f; }
+    #debug button { flex: 1; font-size: 22px; font-weight: 700; padding: 10px 0; border-radius: 8px; border: 2px solid #4a6; background: #123; color: #9fe89f; touch-action: manipulation; }
   </style>
 </head>
 <body>
@@ -134,7 +134,7 @@
       panModelScale: 1.05,      // KayKit 鍋模型縮放（外半徑 = 0.5 * scale）
       maxTilt: THREE.MathUtils.degToRad(34),
       tiltGain: 1.0,            // 裝置角度 -> 鑊角度 倍率
-      flickThresh: Number(Q.get('flick')) || 13,  // 拋鑊加速度閾值 m/s^2
+      flickThresh: Number(Q.get('flick')) || 8,   // 拋鑊加速度閾值 m/s^2
       cookTime: 7,              // 一面由生煎熟所需秒數
       goldenLo: 0.42, goldenHi: 0.8, // 金黃區間
       roundTime: Number(Q.get('t')) || 120,
@@ -195,13 +195,15 @@
           const gl = input.gravity.length() || 1;
           const up = -(a.x * gx + a.y * gy + a.z * gz) / gl;
           const mag = Math.hypot(a.x, a.y, a.z);
-          input.peakAccel = Math.max(input.peakAccel * 0.98, Math.max(up, mag * 0.7));
-          if (up > CFG.flickThresh && flickCooldown <= 0 && flickArmed) {
-            const strength = THREE.MathUtils.clamp(up / 26, 0.55, 1.5);
+          // 主訊號係向上分量；力度訊號做後備，方向估錯都唔會漏判
+          const sig = Math.max(up, mag * 0.7);
+          input.peakAccel = Math.max(input.peakAccel * 0.98, sig);
+          if (sig > CFG.flickThresh && flickCooldown <= 0 && flickArmed) {
+            const strength = THREE.MathUtils.clamp(sig / 20, 0.55, 1.5);
             doFlick(strength);
             flickCooldown = FLICK_COOLDOWN;
             flickArmed = false;
-          } else if (up < CFG.flickThresh * 0.55) {
+          } else if (sig < CFG.flickThresh * 0.55) {
             flickArmed = true;
           }
         }
@@ -597,7 +599,7 @@
     }
     // 面板下方加 -/+ 掣
     const thrRow = document.createElement('div'); thrRow.className = 'row';
-    thrRow.innerHTML = '<button id="thrDn">－</button><button id="thrUp">＋</button>';
+    thrRow.innerHTML = '<button id="thrDn">靈敏度＋</button><button id="thrUp">靈敏度－</button>';
     debugEl.appendChild(thrRow);
     thrRow.querySelector('#thrDn').addEventListener('click', () => threshBtn(-1));
     thrRow.querySelector('#thrUp').addEventListener('click', () => threshBtn(1));
