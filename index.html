@@ -138,10 +138,11 @@
     const CFG = {
       cubes: 5,                 // 牛肉粒數量
       cubeSize: 0.15,           // 每粒邊長
-      panR: 0.42,               // 鑊底內半徑（物理用）
-      catchR: 0.47,             // 接住牛肉粒嘅最大半徑
+      panR: 0.36,               // 鑊內底半徑（模型量度：0.357 × 1.05）
+      floorY: 0.0525,           // 鑊內底高度（模型 0.05 × 1.05）
+      catchR: 0.44,             // 接住牛肉粒嘅最大半徑
       panModelScale: 1.05,      // KayKit 鍋模型縮放（外半徑 = 0.5 * scale）
-      rimTop: 0.3,              // 鑊邊頂高度（飛出嗰粒托起越過用呢個）
+      rimTop: 0.28,             // 鑊邊頂高度（飛出嗰粒托起越過用呢個）
       rimOut: 0.56,             // 鑊邊外半徑，過咗先算真係甩出去
       maxTilt: THREE.MathUtils.degToRad(34),
       tiltGain: 1.0,            // 裝置角度 -> 鑊角度 倍率
@@ -356,6 +357,7 @@
     }
 
     const S = CFG.cubeSize, H = S / 2;
+    const restY = CFG.floorY + H; // 牛肉粒貼住鑊內底嘅中心高度
     const cubes = [];      // 喺鑊度嘅（起菜後會移除）
     const allCubes = [];   // 包括起咗菜嘅，restart 用
     const geo = new THREE.BoxGeometry(S, S, S);
@@ -384,7 +386,7 @@
       const r = CFG.panR * 0.45;
       const cube = {
         mesh,
-        pos: new THREE.Vector3(Math.cos(a) * r, H, Math.sin(a) * r * 0.7),
+        pos: new THREE.Vector3(Math.cos(a) * r, restY, Math.sin(a) * r * 0.7),
         vel: new THREE.Vector3(),
         quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.random() * Math.PI * 2, 0)),
         angVel: new THREE.Vector3(),
@@ -503,13 +505,13 @@
             tmpQ.setFromAxisAngle(tmpV.copy(w).normalize(), wl * dt);
             c.quat.premultiply(tmpQ);
           }
-          if (c.pos.y <= H && c.vel.y < 0) {
+          if (c.pos.y <= restY && c.vel.y < 0) {
             const r = Math.hypot(c.pos.x, c.pos.z);
             if (r < CFG.catchR) {
               // 落返鑊：拉返入牆內範圍先 snap 去最近嘅面
-              const limR = CFG.panR - S * 0.75;
+              const limR = CFG.panR - S * 0.5;
               if (r > limR) { c.pos.x *= limR / r; c.pos.z *= limR / r; }
-              c.pos.y = H;
+              c.pos.y = restY;
               if (c.vel.y < -1.2) { c.vel.y *= -0.18; c.angVel.multiplyScalar(0.4); }
               else {
                 c.vel.set(0, 0, 0); c.angVel.set(0, 0, 0);
@@ -529,7 +531,7 @@
           c.vel.x *= damp; c.vel.z *= damp;
           c.pos.x += c.vel.x * dt; c.pos.z += c.vel.z * dt;
           // 鑊邊擋住（留大半邊牛身，角位都唔會插入鑊邊）
-          const r = Math.hypot(c.pos.x, c.pos.z), lim = CFG.panR - S * 0.75;
+          const r = Math.hypot(c.pos.x, c.pos.z), lim = CFG.panR - S * 0.5;
           if (r > lim) {
             const nx = c.pos.x / r, nz = c.pos.z / r;
             c.pos.x = nx * lim; c.pos.z = nz * lim;
@@ -579,8 +581,8 @@
             A.vel.x -= nx * imp; A.vel.y -= ny * imp; A.vel.z -= nz * imp;
             B.vel.x += nx * imp; B.vel.y += ny * imp; B.vel.z += nz * imp;
           }
-          if (A.state === 'rest') A.pos.y = H;
-          if (B.state === 'rest') B.pos.y = H;
+          if (A.state === 'rest') A.pos.y = restY;
+          if (B.state === 'rest') B.pos.y = restY;
         }
       }
       for (const c of cubes) {
@@ -595,7 +597,7 @@
 
     function respawn(c) {
       const a = Math.random() * Math.PI * 2;
-      c.pos.set(Math.cos(a) * CFG.panR * 0.4, H, Math.sin(a) * CFG.panR * 0.3);
+      c.pos.set(Math.cos(a) * CFG.panR * 0.4, restY, Math.sin(a) * CFG.panR * 0.3);
       c.vel.set(0, 0, 0); c.angVel.set(0, 0, 0);
       c.quat.setFromEuler(new THREE.Euler(0, Math.random() * Math.PI * 2, 0));
       c.cook = [0, 0, 0, 0, 0, 0];
