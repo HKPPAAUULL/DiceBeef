@@ -148,10 +148,12 @@
       tiltX: 0, tiltZ: 0,          // 平滑後嘅鑊傾斜（弧度）
       targetTiltX: 0, targetTiltZ: 0,
       lastAccel: new THREE.Vector3(),
+      gravity: new THREE.Vector3(0, 0, -9.8), // 平滑後嘅重力向量（裝置座標）
       peakAccel: 0,
       motionOn: false,
       beta: 0, gamma: 0,
     };
+    const tmpG = new THREE.Vector3();
     let flickCooldown = 0;
     const FLICK_COOLDOWN = 0.55;
 
@@ -170,34 +172,38 @@
       window.addEventListener('deviceorientation', (e) => {
         if (e.beta == null) return;
         input.beta = e.beta; input.gamma = e.gamma;
-        // 因應螢幕方向，將傾斜旋轉到畫面座標
-        const ang = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
-        let b = THREE.MathUtils.degToRad(e.beta), g = THREE.MathUtils.degToRad(e.gamma);
-        let sx, sz;
-        if (ang === 0)        { sx = -b;  sz = -g; }
-        else if (ang === 90)  { sx = -g;  sz =  b; }
-        else if (ang === 180) { sx =  b;  sz =  g; }
-        else                  { sx =  g;  sz = -b; }
-        input.targetTiltX = THREE.MathUtils.clamp(sx * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
-        input.targetTiltZ = THREE.MathUtils.clamp(sz * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
-        input.motionOn = true;
       });
       let flickArmed = true;
       window.addEventListener('devicemotion', (e) => {
-        const a = e.acceleration || e.accelerationIncludingGravity;
-        if (!a || a.x == null) return;
-        input.lastAccel.set(a.x, a.y, a.z);
-        const mag = Math.hypot(a.x, a.y, a.z);
-        input.peakAccel = Math.max(input.peakAccel * 0.98, mag);
-        // 向上拋：iPad 平放時加速度主要喺 z；斜住拎就計總量
-        const up = Math.max(a.z, mag * 0.72);
-        if (up > CFG.flickThresh && flickCooldown <= 0 && flickArmed) {
-          const strength = THREE.MathUtils.clamp(up / 26, 0.55, 1.5);
-          doFlick(strength);
-          flickCooldown = FLICK_COOLDOWN;
-          flickArmed = false;
-        } else if (up < CFG.flickThresh * 0.55) {
-          flickArmed = true;
+        const g = e.accelerationIncludingGravity;
+        const a = e.acceleration;
+        if (!g || g.x == null) return;
+        // 平滑重力向量（裝置座標）
+        input.gravity.lerp(tmpG.set(g.x, g.y, g.z), 0.25);
+        input.lastAccel.set(g.x, g.y, g.z);
+        // 將重力投影到螢幕座標 → 鍋傾斜方向（邊邊低就向邊邊滾）
+        const ang = ((screen.orientation && screen.orientation.angle) || window.orientation || 0) * Math.PI / 180;
+        const cs = Math.cos(ang), sn = Math.sin(ang);
+        const gx = input.gravity.x, gy = input.gravity.y, gz = input.gravity.z;
+        const sgx = gx * cs + gy * sn;   // 重力沿螢幕右方嘅分量
+        const sgy = -gx * sn + gy * cs;  // 重力沿螢幕上方嘅分量
+        input.targetTiltX = THREE.MathUtils.clamp(-Math.atan2(sgy, -gz) * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
+        input.targetTiltZ = THREE.MathUtils.clamp(-Math.atan2(sgx, -gz) * CFG.tiltGain, -CFG.maxTilt, CFG.maxTilt);
+        input.motionOn = true;
+        // 拋鑊：向上嘅加速度 = 加速度沿「反重力」方向嘅投影，唔受拎機角度影響
+        if (a && a.x != null) {
+          const gl = input.gravity.length() || 1;
+          const up = -(a.x * gx + a.y * gy + a.z * gz) / gl;
+          const mag = Math.hypot(a.x, a.y, a.z);
+          input.peakAccel = Math.max(input.peakAccel * 0.98, Math.max(up, mag * 0.7));
+          if (up > CFG.flickThresh && flickCooldown <= 0 && flickArmed) {
+            const strength = THREE.MathUtils.clamp(up / 26, 0.55, 1.5);
+            doFlick(strength);
+            flickCooldown = FLICK_COOLDOWN;
+            flickArmed = false;
+          } else if (up < CFG.flickThresh * 0.55) {
+            flickArmed = true;
+          }
         }
       });
     }
